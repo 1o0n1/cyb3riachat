@@ -1,0 +1,83 @@
+#!/bin/bash
+
+# Путь к корневой директории проекта
+PROJECT_ROOT="/var/www/cyb3ria"
+
+# Имя файла вывода (без номера)
+OUTPUT_FILE_BASE="$PROJECT_ROOT/project_contents"
+
+# Функция для проверки и изменения имени файла
+get_available_filename() {
+  local base="$1"
+  local filename="$base.txt"
+  local counter=1
+
+  while [ -f "$filename" ]; do
+    filename="${base}_${counter}.txt"
+    ((counter++))
+  done
+
+  echo "$filename"
+}
+
+# Определяем имя файла вывода, которое не существует
+OUTPUT_FILE=$(get_available_filename "$OUTPUT_FILE_BASE")
+
+# Функция для обработки файла
+process_file() {
+  FILE_PATH="$1"
+  echo "$FILE_PATH" >> "$OUTPUT_FILE"
+  echo "" >> "$OUTPUT_FILE"
+  cat "$FILE_PATH" >> "$OUTPUT_FILE"
+  echo -e "\n\n\n" >> "$OUTPUT_FILE"
+}
+
+# Список файлов в новой структуре
+FILES=(
+  "$PROJECT_ROOT/.env"
+  "$PROJECT_ROOT/Cargo.toml"
+  "$PROJECT_ROOT/src/main.rs"
+  "$PROJECT_ROOT/src/db.rs"
+  "$PROJECT_ROOT/src/error.rs"
+  "$PROJECT_ROOT/src/state.rs"
+  "$PROJECT_ROOT/src/routes/mod.rs"
+  "$PROJECT_ROOT/src/routes/users.rs"
+  "$PROJECT_ROOT/src/routes/messages.rs"
+  "$PROJECT_ROOT/src/routes/discussions.rs"
+  "$PROJECT_ROOT/src/routes/comments.rs"
+  "$PROJECT_ROOT/src/handlers/mod.rs"
+  "$PROJECT_ROOT/src/handlers/user_handler.rs"
+  "$PROJECT_ROOT/src/handlers/message_handler.rs"
+  "$PROJECT_ROOT/src/handlers/discussion_handler.rs"
+  "$PROJECT_ROOT/src/handlers/comment_handler.rs"
+  "$PROJECT_ROOT/src/models/mod.rs"
+  "$PROJECT_ROOT/src/models/user.rs"
+  "$PROJECT_ROOT/src/models/message.rs"
+  "$PROJECT_ROOT/src/models/discussion.rs"
+  "$PROJECT_ROOT/src/models/comment.rs"
+  "$PROJECT_ROOT/static/css/chat.css"
+  "$PROJECT_ROOT/static/css/dashboard.css"
+  "$PROJECT_ROOT/static/css/forms.css"
+  "$PROJECT_ROOT/static/css/menu.css"
+  "$PROJECT_ROOT/static/css/profile.css"
+  "$PROJECT_ROOT/static/css/styles.css"
+  "$PROJECT_ROOT/static/css/upload.css"
+  "$PROJECT_ROOT/static/js/menu.js"
+  "$PROJECT_ROOT/static/js/scripts.js"
+  "$PROJECT_ROOT/static/chat.html"
+  "$PROJECT_ROOT/static/choice.html"
+  "$PROJECT_ROOT/static/dashboard.html"
+  "$PROJECT_ROOT/static/login.html"
+  "$PROJECT_ROOT/static/menu.html"
+  "$PROJECT_ROOT/static/profile.html"
+  "$PROJECT_ROOT/static/register.html"
+  "$PROJECT_ROOT/static/upload.html"
+  "$PROJECT_ROOT/static/404.html"
+)
+
+# Обрабатываем файлы из списка
+for FILE in "${FILES[@]}"; do
+  process_file "$FILE"
+done
+
+echo "Содержимое проекта записано в файл: $OUTPUT_FILE"
