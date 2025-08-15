@@ -17,6 +17,7 @@ get_available_filename() {
     ((counter++))
   done
 
+ 
   echo "$filename"
 }
 

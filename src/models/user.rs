@@ -7,6 +7,7 @@ pub struct User {
     pub id: Uuid,
     pub username: String,
     pub email: String,
+    pub public_key: Option<String>,
 
     // Добавляем недостающее поле
     // Оно Option<String>, так как в БД колонка может быть NULL.

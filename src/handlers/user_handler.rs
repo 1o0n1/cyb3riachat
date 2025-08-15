@@ -34,6 +34,7 @@ pub struct CreateUserPayload {
     pub username: String,
     pub email: String,
     pub password: String,
+    pub public_key: String,
 }
 
 // --- БЛОК 3: Функция создания пользователя (остается без изменений) ---
@@ -57,10 +58,11 @@ pub async fn create_user(
     
     let user = sqlx::query_as!(
         User,
-        "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING *",
+        "INSERT INTO users (username, email, password_hash, public_key) VALUES ($1, $2, $3, $4) RETURNING *",
         payload.username,
         payload.email,
-        password_hash
+        password_hash,
+        payload.public_key
     )
     .fetch_one(&state.pool)
     .await?;
