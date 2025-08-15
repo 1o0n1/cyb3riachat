@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 # Основные библиотеки
 axum = { version = "0.8.4", features = ["macros"] }
-warp = "0.3.7"       # Веб-фреймворк
 tokio = { version = "1.47.0", features = ["full"] } # Tokio - асинхронный рантайм. Нужна фича "full" для всех его возможностей.
 futures = "0.3.30"
 serde = { version = "1.0.203", features = ["derive"] } # Serde - для (де)сериализации, особенно в JSON.
