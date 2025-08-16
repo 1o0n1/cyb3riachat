@@ -1,7 +1,9 @@
 use axum::{
     extract::{Path, State},
-    Json,
+    Json, 
 };
+use axum::Extension;
+
 use uuid::Uuid;
 use crate::{
     state::AppState,
@@ -9,13 +11,14 @@ use crate::{
     error::AppError,
 };
 
+
 #[derive(serde::Deserialize)]
 pub struct CreateDiscussionPayload {
     pub title: String,
-    pub author_id: Uuid,
 }
 
 pub async fn create_discussion(
+    Extension(user_id): Extension<Uuid>, // <-- Получаем ID автора из токена
     State(state): State<AppState>,
     Json(payload): Json<CreateDiscussionPayload>,
 ) -> Result<Json<Discussion>, AppError> {
@@ -23,7 +26,7 @@ pub async fn create_discussion(
         Discussion,
         "INSERT INTO discussions (title, author_id) VALUES ($1, $2) RETURNING *",
         payload.title,
-        payload.author_id
+        user_id // <-- Используем проверенный ID
     )
     .fetch_one(&state.pool)
     .await?;

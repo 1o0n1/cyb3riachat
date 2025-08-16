@@ -27,6 +27,28 @@ use crate::{
     error::AppError,
 };
 
+// --- НОВАЯ СТРУКТУРА для ответа ---
+// Мы не хотим отдавать все поля User, особенно хэш пароля.
+// Создадим специальную "безопасную" структуру для ответа.
+#[derive(Serialize, sqlx::FromRow)]
+pub struct SafeUser {
+    pub id: Uuid,
+    pub username: String,
+    pub public_key: Option<String>,
+}
+
+// --- НОВАЯ ФУНКЦИЯ ---
+pub async fn get_all_users(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<SafeUser>>, AppError> {
+    let users = sqlx::query_as::<_, SafeUser>(
+        "SELECT id, username, public_key FROM users"
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(users))
+}
 
 // --- БЛОК 2: Структура для создания пользователя ---
 #[derive(Deserialize)]
@@ -34,6 +56,7 @@ pub struct CreateUserPayload {
     pub username: String,
     pub email: String,
     pub password: String,
+    pub public_key: String,
 }
 
 // --- БЛОК 3: Функция создания пользователя (остается без изменений) ---
@@ -55,15 +78,27 @@ pub async fn create_user(
     })?
     ?;
     
+    let new_user_id = sqlx::query!(
+        "INSERT INTO users (username, email, password_hash, public_key) VALUES ($1, $2, $3, $4) RETURNING id",
+         payload.username,
+        payload.email,
+        password_hash,
+        payload.public_key
+    )
+    .fetch_one(&state.pool)
+    .await?
+    .id;
+
+    // 2. Теперь, когда мы знаем ID, делаем чистый SELECT, чтобы получить полную структуру User.
+    //    Так sqlx точно сможет правильно сопоставить типы.
     let user = sqlx::query_as!(
         User,
-        "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING *",
-        payload.username,
-        payload.email,
-        password_hash
+        "SELECT * FROM users WHERE id = $1",
+        new_user_id
     )
     .fetch_one(&state.pool)
     .await?;
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     Ok(Json(user))
 }
@@ -140,6 +175,7 @@ pub async fn login(
         let claims = Claims {
             sub: user.id,
             exp,
+            pk: user.public_key.clone().unwrap_or_default(),
         };
 
         let token = encode(

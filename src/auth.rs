@@ -2,7 +2,7 @@
 
 use axum::{
     body::Body,
-    http::{Request, StatusCode},
+    http::{Request},
     middleware::Next,
     response::Response,
     extract::State,
@@ -17,6 +17,7 @@ use crate::{state::AppState, error::AppError};
 pub struct Claims {
     pub sub: Uuid,
     pub exp: i64,
+    pub pk: String, // <-- НОВОЕ ПОЛЕ: Public Key в base64
 }
 
 pub async fn auth_middleware(
