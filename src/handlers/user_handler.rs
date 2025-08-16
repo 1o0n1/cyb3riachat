@@ -56,16 +56,27 @@ pub async fn create_user(
     })?
     ?;
     
-    let user = sqlx::query_as!(
-        User,
-        "INSERT INTO users (username, email, password_hash, public_key) VALUES ($1, $2, $3, $4) RETURNING *",
-        payload.username,
+    let new_user_id = sqlx::query!(
+        "INSERT INTO users (username, email, password_hash, public_key) VALUES ($1, $2, $3, $4) RETURNING id",
+         payload.username,
         payload.email,
         password_hash,
         payload.public_key
     )
     .fetch_one(&state.pool)
+    .await?
+    .id;
+
+    // 2. Теперь, когда мы знаем ID, делаем чистый SELECT, чтобы получить полную структуру User.
+    //    Так sqlx точно сможет правильно сопоставить типы.
+    let user = sqlx::query_as!(
+        User,
+        "SELECT * FROM users WHERE id = $1",
+        new_user_id
+    )
+    .fetch_one(&state.pool)
     .await?;
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     Ok(Json(user))
 }
@@ -142,6 +153,7 @@ pub async fn login(
         let claims = Claims {
             sub: user.id,
             exp,
+            pk: user.public_key.clone().unwrap_or_default(),
         };
 
         let token = encode(
