@@ -15,7 +15,8 @@ use crate::{
 
 #[derive(serde::Deserialize)]
 pub struct CreateMessagePayload {
-    pub content: String,
+    pub recipient_id: Uuid,
+    pub content: String, // Сюда придет зашифрованная строка в Base64
 }
 
 #[axum::debug_handler]
@@ -24,11 +25,18 @@ pub async fn create_message(
     State(state): State<AppState>,
     Json(payload): Json<CreateMessagePayload>,
 ) -> Result<Json<Message>, AppError> {
+    // Проверяем, что пользователь не отправляет сообщение сам себе
+    if user_id == payload.recipient_id {
+        // Здесь можно вернуть кастомную ошибку, но для простоты пока оставим так
+        return Err(AppError::InternalServerError); 
+    }
+
     let message = sqlx::query_as!(
         Message,
-        "INSERT INTO messages (user_id, content) VALUES ($1, $2) RETURNING *",
-        user_id, // <-- Используем ID из расширений
-        payload.content
+        "INSERT INTO messages (user_id, recipient_id, content) VALUES ($1, $2, $3) RETURNING *",
+        user_id, // Отправитель
+        payload.recipient_id, // Получатель
+        payload.content // Зашифрованное сообщение
     )
     .fetch_one(&state.pool)
     .await?;

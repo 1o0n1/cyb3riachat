@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 pub struct Message {
     pub id: Uuid,
     pub user_id: Uuid,
+    pub recipient_id: Option<Uuid>,
     pub content: String,
     pub created_at: DateTime<Utc>,
 }

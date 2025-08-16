@@ -17,7 +17,6 @@ edition = "2024"
 [dependencies]
 # Основные библиотеки
 axum = { version = "0.8.4", features = ["macros"] }
-warp = "0.3.7"       # Веб-фреймворк
 tokio = { version = "1.47.0", features = ["full"] } # Tokio - асинхронный рантайм. Нужна фича "full" для всех его возможностей.
 futures = "0.3.30"
 serde = { version = "1.0.203", features = ["derive"] } # Serde - для (де)сериализации, особенно в JSON.
@@ -28,7 +27,7 @@ dotenvy = "0.15.7" # Dotenvy - для чтения .env файлов.
 sqlx = { version = "0.8.0", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono"] } # SQLx - для работы с PostgreSQL. Включаем нужный рантайм и драйвер.
 tracing = "0.1.41" # Tracing - для логирования. Нужна фича "env-filter" для фильтрации логов.
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
-tower-http = { version = "0.5.2", features = ["trace"] }
+tower-http = { version = "0.5.2", features = ["trace", "cors"] }
 argon2 = "0.5"
 uuid = { version = "1.9.1", features = ["serde", "v4"] }
 jsonwebtoken = "9"
@@ -46,10 +45,18 @@ use std::net::SocketAddr;
 use dotenvy::dotenv;
 use std::env;
 use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
+use axum::http::Method; // <-- Перенес импорт Method наверх для порядка
+
+// --- ЕДИНСТВЕННЫЙ И ПРАВИЛЬНЫЙ БЛОК ИМПОРТОВ TOWER_HTTP ---
+use tower_http::{
+    cors::CorsLayer,
+    trace::TraceLayer,
+};
+// --- КОНЕЦ БЛОКА ---
+
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-
+// --- Подключаем все наши модули (без изменений) ---
 mod db;
 mod routes;
 mod models;
@@ -66,7 +73,7 @@ use config::Config;
 async fn main() {
     dotenv().ok();
 
-    // Настройка логирования
+    // Настройка логирования (без изменений)
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -77,21 +84,38 @@ async fn main() {
 
     let config = Config::from_env();
 
-    // Подключение к БД
+    // Подключение к БД (без изменений)
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = db::connect_db(&database_url).await;
     
-    // Создание состояния приложения
+    // Создание состояния приложения (без изменений)
     let app_state = AppState { 
         pool,
         config,
      };
 
-    // Создание роутера с состоянием
-    let app = routes::create_routes(app_state)
-        .layer(TraceLayer::new_for_http());
+    // --- ОБНОВЛЕННЫЙ БЛОК: НАСТРОЙКА CORS ---
+    let cors = CorsLayer::new()
+        // ИЗМЕНЕНИЕ ЗДЕСЬ: Мы создаем список разрешенных источников
+        .allow_origin([
+            "http://localhost:8000".parse::<axum::http::HeaderValue>().unwrap(),
+            "http://192.168.1.45:8000".parse::<axum::http::HeaderValue>().unwrap(),
+            // Можешь добавить и IP другого устройства, с которого заходил, на всякий случай
+            "http://192.168.1.96:8000".parse::<axum::http::HeaderValue>().unwrap(), 
+        ])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE
+        ])
+        .allow_methods([Method::GET, Method::POST, Method::PATCH, Method::DELETE]);
+    // --- КОНЕЦ ОБНОВЛЕННОГО БЛОКА ---
 
-    // Запуск сервера
+    // Создание роутера с состоянием и слоями
+    let app = routes::create_routes(app_state)
+        .layer(TraceLayer::new_for_http())
+        .layer(cors);
+
+    // Запуск сервера (без изменений)
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     tracing::debug!("Listening on {}", addr);
     let listener = TcpListener::bind(&addr).await.unwrap();
@@ -244,21 +268,26 @@ pub fn create_routes(app_state: AppState) -> Router {
 
 /var/www/cyb3ria/src/routes/users.rs
 
+// /var/www/cyb3ria/src/routes/users.rs
+
 use axum::{Router, routing::{get, post}};
 use crate::state::AppState;
 use crate::handlers::user_handler;
 
-// Роуты, не требующие аутентификации
+// --- ВОТ ЭТА ФУНКЦИЯ ПРОПАЛА ---
+// Роуты, не требующие аутентификации (регистрация и вход)
 pub fn create_public_user_routes() -> Router<AppState> {
     Router::new()
         .route("/users", post(user_handler::create_user))
         .route("/login", post(user_handler::login))
 }
+// --- КОНЕЦ ВОССТАНОВЛЕННОГО БЛОКА ---
 
-// Роуты, требующие аутентификации
+// Роуты, требующие аутентификации (получение инфо о юзере и списка всех юзеров)
 pub fn create_protected_user_routes() -> Router<AppState> {
     Router::new()
-        .route("/users/{id}", get(user_handler::get_user))
+        .route("/users", get(user_handler::get_all_users)) // <- Получение списка
+        .route("/users/{id}", get(user_handler::get_user))   // <- Получение одного по ID
 }
 
 
@@ -345,6 +374,28 @@ use crate::{
     error::AppError,
 };
 
+// --- НОВАЯ СТРУКТУРА для ответа ---
+// Мы не хотим отдавать все поля User, особенно хэш пароля.
+// Создадим специальную "безопасную" структуру для ответа.
+#[derive(Serialize, sqlx::FromRow)]
+pub struct SafeUser {
+    pub id: Uuid,
+    pub username: String,
+    pub public_key: Option<String>,
+}
+
+// --- НОВАЯ ФУНКЦИЯ ---
+pub async fn get_all_users(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<SafeUser>>, AppError> {
+    let users = sqlx::query_as::<_, SafeUser>(
+        "SELECT id, username, public_key FROM users"
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(users))
+}
 
 // --- БЛОК 2: Структура для создания пользователя ---
 #[derive(Deserialize)]
@@ -352,6 +403,7 @@ pub struct CreateUserPayload {
     pub username: String,
     pub email: String,
     pub password: String,
+    pub public_key: String,
 }
 
 // --- БЛОК 3: Функция создания пользователя (остается без изменений) ---
@@ -373,15 +425,27 @@ pub async fn create_user(
     })?
     ?;
     
+    let new_user_id = sqlx::query!(
+        "INSERT INTO users (username, email, password_hash, public_key) VALUES ($1, $2, $3, $4) RETURNING id",
+         payload.username,
+        payload.email,
+        password_hash,
+        payload.public_key
+    )
+    .fetch_one(&state.pool)
+    .await?
+    .id;
+
+    // 2. Теперь, когда мы знаем ID, делаем чистый SELECT, чтобы получить полную структуру User.
+    //    Так sqlx точно сможет правильно сопоставить типы.
     let user = sqlx::query_as!(
         User,
-        "INSERT INTO users (username, email, password_hash) VALUES ($1, $2, $3) RETURNING *",
-        payload.username,
-        payload.email,
-        password_hash
+        "SELECT * FROM users WHERE id = $1",
+        new_user_id
     )
     .fetch_one(&state.pool)
     .await?;
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     Ok(Json(user))
 }
@@ -458,6 +522,7 @@ pub async fn login(
         let claims = Claims {
             sub: user.id,
             exp,
+            pk: user.public_key.clone().unwrap_or_default(),
         };
 
         let token = encode(
@@ -501,7 +566,8 @@ use crate::{
 
 #[derive(serde::Deserialize)]
 pub struct CreateMessagePayload {
-    pub content: String,
+    pub recipient_id: Uuid,
+    pub content: String, // Сюда придет зашифрованная строка в Base64
 }
 
 #[axum::debug_handler]
@@ -510,11 +576,18 @@ pub async fn create_message(
     State(state): State<AppState>,
     Json(payload): Json<CreateMessagePayload>,
 ) -> Result<Json<Message>, AppError> {
+    // Проверяем, что пользователь не отправляет сообщение сам себе
+    if user_id == payload.recipient_id {
+        // Здесь можно вернуть кастомную ошибку, но для простоты пока оставим так
+        return Err(AppError::InternalServerError); 
+    }
+
     let message = sqlx::query_as!(
         Message,
-        "INSERT INTO messages (user_id, content) VALUES ($1, $2) RETURNING *",
-        user_id, // <-- Используем ID из расширений
-        payload.content
+        "INSERT INTO messages (user_id, recipient_id, content) VALUES ($1, $2, $3) RETURNING *",
+        user_id, // Отправитель
+        payload.recipient_id, // Получатель
+        payload.content // Зашифрованное сообщение
     )
     .fetch_one(&state.pool)
     .await?;
@@ -544,8 +617,10 @@ pub async fn get_message(
 
 use axum::{
     extract::{Path, State},
-    Json,
+    Json, 
 };
+use axum::Extension;
+
 use uuid::Uuid;
 use crate::{
     state::AppState,
@@ -553,13 +628,14 @@ use crate::{
     error::AppError,
 };
 
+
 #[derive(serde::Deserialize)]
 pub struct CreateDiscussionPayload {
     pub title: String,
-    pub author_id: Uuid,
 }
 
 pub async fn create_discussion(
+    Extension(user_id): Extension<Uuid>, // <-- Получаем ID автора из токена
     State(state): State<AppState>,
     Json(payload): Json<CreateDiscussionPayload>,
 ) -> Result<Json<Discussion>, AppError> {
@@ -567,7 +643,7 @@ pub async fn create_discussion(
         Discussion,
         "INSERT INTO discussions (title, author_id) VALUES ($1, $2) RETURNING *",
         payload.title,
-        payload.author_id
+        user_id // <-- Используем проверенный ID
     )
     .fetch_one(&state.pool)
     .await?;
@@ -604,15 +680,16 @@ use crate::{
     models::comment::Comment,
     error::AppError,
 };
+use axum::Extension;
 
 #[derive(serde::Deserialize)]
 pub struct CreateCommentPayload {
     pub discussion_id: Uuid,
-    pub author_id: Uuid,
     pub content: String,
 }
 
 pub async fn create_comment(
+    Extension(user_id): Extension<Uuid>, // <-- ПОЛУЧАЕМ ID автора из токена
     State(state): State<AppState>,
     Json(payload): Json<CreateCommentPayload>,
 ) -> Result<Json<Comment>, AppError> {
@@ -620,7 +697,7 @@ pub async fn create_comment(
         Comment,
         "INSERT INTO comments (discussion_id, author_id, content) VALUES ($1, $2, $3) RETURNING *",
         payload.discussion_id,
-        payload.author_id,
+        user_id, // <-- ИСПОЛЬЗУЕМ безопасный ID из токена
         payload.content
     )
     .fetch_one(&state.pool)
@@ -667,6 +744,7 @@ pub struct User {
     pub id: Uuid,
     pub username: String,
     pub email: String,
+    pub public_key: Option<String>,
 
     // Добавляем недостающее поле
     // Оно Option<String>, так как в БД колонка может быть NULL.
@@ -691,6 +769,7 @@ use chrono::{DateTime, Utc};
 pub struct Message {
     pub id: Uuid,
     pub user_id: Uuid,
+    pub recipient_id: Option<Uuid>,
     pub content: String,
     pub created_at: DateTime<Utc>,
 }
@@ -730,8 +809,218 @@ pub struct Comment {
 
 
 
+/var/www/cyb3ria/static/css/chat.css
 
 
+
+
+
+/var/www/cyb3ria/static/css/dashboard.css
+
+
+
+
+
+/var/www/cyb3ria/static/css/forms.css
+
+
+
+
+
+/var/www/cyb3ria/static/css/menu.css
+
+
+
+
+
+/var/www/cyb3ria/static/css/profile.css
+
+
+
+
+
+/var/www/cyb3ria/static/css/styles.css
+
+
+
+
+
+/var/www/cyb3ria/static/css/upload.css
+
+
+
+
+
+/var/www/cyb3ria/static/js/menu.js
+
+
+
+
+
+/var/www/cyb3ria/static/js/scripts.js
+
+
+
+
+
+/var/www/cyb3ria/static/chat.html
+
+
+
+
+
+/var/www/cyb3ria/static/choice.html
+
+
+
+
+
+/var/www/cyb3ria/static/dashboard.html
+
+
+
+
+
+/var/www/cyb3ria/static/login.html
+
+
+
+
+
+/var/www/cyb3ria/static/menu.html
+
+
+
+
+
+/var/www/cyb3ria/static/profile.html
+
+
+
+
+
+/var/www/cyb3ria/static/register.html
+
+
+
+
+
+/var/www/cyb3ria/static/upload.html
+
+
+
+
+
+/var/www/cyb3ria/static/404.html
+
+
+
+
+
+/var/www/cyb3ria/migrations/20250810000001_create_messages.sql
+
+CREATE TABLE messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+
+/var/www/cyb3ria/migrations/20250810000002_create_discussions.sql
+
+CREATE TABLE discussions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title TEXT NOT NULL,
+    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+
+
+/var/www/cyb3ria/migrations/20250810000003_create_comments.sql
+
+CREATE TABLE comments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    discussion_id UUID NOT NULL REFERENCES discussions(id) ON DELETE CASCADE,
+    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+
+
+/var/www/cyb3ria/migrations/20250810000004_add_public_key_to_users.sql
+
+-- Add up migration script here
+ALTER TABLE users ADD COLUMN public_key TEXT;
+
+-- Add down migration script here
+ ALTER TABLE users DROP COLUMN public_key;
+
+
+
+/var/www/cyb3ria/migrations/20250810000005_add_recipient_to_messages.sql
+
+-- Add up migration script here
+-- Добавляем колонку для ID получателя
+ALTER TABLE messages ADD COLUMN recipient_id UUID;
+
+-- Создаем связь с таблицей users, чтобы нельзя было отправить сообщение несуществующему пользователю
+ALTER TABLE messages ADD CONSTRAINT fk_recipient
+    FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL;
+
+-- 'Down' миграция для отката
+-- Add down migration script here
+ALTER TABLE messages DROP CONSTRAINT fk_recipient;
+ALTER TABLE messages DROP COLUMN recipient_id;
+
+
+
+/var/www/cyb3ria/migrations/20250810000007_create_users_table.sql
+
+-- Add migration script here
+
+-- Создаем расширение, если оно еще не установлено, для использования UUID
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Создаем таблицу пользователей
+CREATE TABLE users (
+-- Уникальный идентификатор пользователя, генерируется автоматически
+id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+
+-- Имя пользователя, должно быть уникальным и непустым
+username VARCHAR(255) UNIQUE NOT NULL,
+
+-- Хеш пароля. Никогда не храните пароли в открытом виде!
+-- Поле может быть NULL, так как у нас будет аутентификация без пароля (passkeys).
+password_hash VARCHAR(255),
+
+-- Email, должен быть уникальным.
+email VARCHAR(255) UNIQUE NOT NULL,
+
+-- Временные метки
+created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Добавляем триггер для автоматического обновления поля updated_at
+-- при любом изменении строки. Это очень удобно.
+CREATE OR REPLACE FUNCTION trigger_set_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+NEW.updated_at = NOW();
+RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER set_timestamp
+BEFORE UPDATE ON users
+FOR EACH ROW
+EXECUTE FUNCTION trigger_set_timestamp();
 
 
 

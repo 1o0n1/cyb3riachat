@@ -74,6 +74,13 @@ FILES=(
   "$PROJECT_ROOT/static/register.html"
   "$PROJECT_ROOT/static/upload.html"
   "$PROJECT_ROOT/static/404.html"
+  "$PROJECT_ROOT/migrations/20250810000001_create_messages.sql"
+  "$PROJECT_ROOT/migrations/20250810000002_create_discussions.sql"
+  "$PROJECT_ROOT/migrations/20250810000003_create_comments.sql"
+  "$PROJECT_ROOT/migrations/20250810000004_add_public_key_to_users.sql"
+  "$PROJECT_ROOT/migrations/20250810000005_add_recipient_to_messages.sql"
+  "$PROJECT_ROOT/migrations/20250810000007_create_users_table.sql"
+  
 )
 
 # Обрабатываем файлы из списка
