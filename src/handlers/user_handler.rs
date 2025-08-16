@@ -27,6 +27,28 @@ use crate::{
     error::AppError,
 };
 
+// --- НОВАЯ СТРУКТУРА для ответа ---
+// Мы не хотим отдавать все поля User, особенно хэш пароля.
+// Создадим специальную "безопасную" структуру для ответа.
+#[derive(Serialize, sqlx::FromRow)]
+pub struct SafeUser {
+    pub id: Uuid,
+    pub username: String,
+    pub public_key: Option<String>,
+}
+
+// --- НОВАЯ ФУНКЦИЯ ---
+pub async fn get_all_users(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<SafeUser>>, AppError> {
+    let users = sqlx::query_as::<_, SafeUser>(
+        "SELECT id, username, public_key FROM users"
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(users))
+}
 
 // --- БЛОК 2: Структура для создания пользователя ---
 #[derive(Deserialize)]
