@@ -59,3 +59,26 @@ pub async fn get_message(
 
     Ok(Json(message))
 }
+
+// --- НОВАЯ ФУНКЦИЯ ---
+pub async fn get_conversation_with(
+    Extension(user_id): Extension<Uuid>, // ID текущего пользователя
+    State(state): State<AppState>,
+    Path(partner_id): Path<Uuid>, // ID собеседника из URL
+) -> Result<Json<Vec<Message>>, AppError> {
+    let messages = sqlx::query_as!(
+        Message,
+        // Этот запрос выбирает все сообщения, где текущий юзер - отправитель, а собеседник - получатель,
+        // ИЛИ где собеседник - отправитель, а текущий юзер - получатель.
+        // И сортирует их по дате создания.
+        "SELECT * FROM messages 
+         WHERE (user_id = $1 AND recipient_id = $2) OR (user_id = $2 AND recipient_id = $1)
+         ORDER BY created_at ASC",
+        user_id,
+        partner_id
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(messages))
+}
