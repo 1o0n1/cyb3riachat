@@ -138,6 +138,7 @@ pub async fn login(
         
         let claims = Claims {
             sub: user.id,
+            username: user.username.clone(),
             exp,
             pk: user.public_key.clone().unwrap_or_default(),
         };

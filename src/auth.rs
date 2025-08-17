@@ -16,6 +16,7 @@ use crate::{state::AppState, error::AppError};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: Uuid,
+    pub username: String,
     pub exp: i64,
     pub pk: String, // <-- НОВОЕ ПОЛЕ: Public Key в base64
 }
