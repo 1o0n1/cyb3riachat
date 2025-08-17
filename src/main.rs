@@ -50,9 +50,9 @@ async fn main() {
 
     let cors = CorsLayer::new()
         .allow_origin([
-            "http://localhost:8000".parse().unwrap(),
-            "http://192.168.1.45:8000".parse().unwrap(),
-            "http://192.168.1.96:8000".parse().unwrap(), 
+            "https://cyb3ria.xyz".parse().unwrap(),
+            "http://localhost:3000".parse().unwrap(),
+            "http://192.168.1.45:3000".parse().unwrap(),
         ])
         .allow_headers([
             axum::http::header::AUTHORIZATION,
