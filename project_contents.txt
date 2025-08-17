@@ -233,6 +233,76 @@ pub struct AppState {
 
 
 
+/var/www/cyb3ria/src/config.rs
+
+// /var/www/cyb3ria/src/config.rs
+use std::env;
+
+#[derive(Clone)]
+pub struct Config {
+    pub jwt_secret: String,
+}
+
+impl Config {
+    pub fn from_env() -> Self {
+        Self {
+            jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
+        }
+    }
+}
+
+
+
+/var/www/cyb3ria/src/auth.rs
+
+// /var/www/cyb3ria/src/auth.rs
+
+use axum::{
+    body::Body,
+    http::{Request},
+    middleware::Next,
+    response::Response,
+    extract::State,
+};
+use jsonwebtoken::{decode, DecodingKey, Validation};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use crate::{state::AppState, error::AppError};
+
+// Claims остаются публичными, так как используются и в user_handler
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: Uuid,
+    pub exp: i64,
+    pub pk: String, // <-- НОВОЕ ПОЛЕ: Public Key в base64
+}
+
+pub async fn auth_middleware(
+    State(state): State<AppState>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Result<Response, AppError> {
+    let token = request.headers()
+        .get("Authorization")
+        .and_then(|auth_header| auth_header.to_str().ok())
+        .and_then(|auth_value| auth_value.strip_prefix("Bearer "))
+        .ok_or(AppError::Unauthorized)?;
+
+    let claims = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(state.config.jwt_secret.as_ref()),
+        &Validation::default(),
+    )
+    .map_err(|_| AppError::Unauthorized)?
+    .claims;
+
+    request.extensions_mut().insert(claims.sub);
+
+    Ok(next.run(request).await)
+}
+
+
+
 /var/www/cyb3ria/src/routes/mod.rs
 
 use axum::{Router, middleware};
@@ -301,7 +371,7 @@ use crate::handlers::message_handler; // <- Указываем на новый �
 pub fn create_message_routes() -> Router<AppState> {
     Router::new()
         .route("/messages", post(message_handler::create_message))
-        .route("/messages/{id}", get(message_handler::get_message))
+        .route("/messages/{partner_id}", get(message_handler::get_conversation_with))
 }
 
 
@@ -611,6 +681,29 @@ pub async fn get_message(
     Ok(Json(message))
 }
 
+// --- НОВАЯ ФУНКЦИЯ ---
+pub async fn get_conversation_with(
+    Extension(user_id): Extension<Uuid>, // ID текущего пользователя
+    State(state): State<AppState>,
+    Path(partner_id): Path<Uuid>, // ID собеседника из URL
+) -> Result<Json<Vec<Message>>, AppError> {
+    let messages = sqlx::query_as!(
+        Message,
+        // Этот запрос выбирает все сообщения, где текущий юзер - отправитель, а собеседник - получатель,
+        // ИЛИ где собеседник - отправитель, а текущий юзер - получатель.
+        // И сортирует их по дате создания.
+        "SELECT * FROM messages 
+         WHERE (user_id = $1 AND recipient_id = $2) OR (user_id = $2 AND recipient_id = $1)
+         ORDER BY created_at ASC",
+        user_id,
+        partner_id
+    )
+    .fetch_all(&state.pool)
+    .await?;
+
+    Ok(Json(messages))
+}
+
 
 
 /var/www/cyb3ria/src/handlers/discussion_handler.rs
@@ -809,178 +902,50 @@ pub struct Comment {
 
 
 
-/var/www/cyb3ria/static/css/chat.css
-
-
-
-
-
-/var/www/cyb3ria/static/css/dashboard.css
-
-
-
-
-
-/var/www/cyb3ria/static/css/forms.css
-
-
-
-
-
-/var/www/cyb3ria/static/css/menu.css
-
-
-
-
-
-/var/www/cyb3ria/static/css/profile.css
-
-
-
-
-
-/var/www/cyb3ria/static/css/styles.css
-
-
-
-
-
-/var/www/cyb3ria/static/css/upload.css
-
-
-
-
-
-/var/www/cyb3ria/static/js/menu.js
-
-
-
-
-
-/var/www/cyb3ria/static/js/scripts.js
-
-
-
-
-
-/var/www/cyb3ria/static/chat.html
-
-
-
-
-
-/var/www/cyb3ria/static/choice.html
-
-
-
-
-
-/var/www/cyb3ria/static/dashboard.html
-
-
-
-
-
-/var/www/cyb3ria/static/login.html
-
-
-
-
-
-/var/www/cyb3ria/static/menu.html
-
-
-
-
-
-/var/www/cyb3ria/static/profile.html
-
-
-
-
-
-/var/www/cyb3ria/static/register.html
-
-
-
-
-
-/var/www/cyb3ria/static/upload.html
-
-
-
-
-
-/var/www/cyb3ria/static/404.html
-
-
-
-
-
-/var/www/cyb3ria/migrations/20250810000001_create_messages.sql
-
-CREATE TABLE messages (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    content TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-
-
-/var/www/cyb3ria/migrations/20250810000002_create_discussions.sql
-
-CREATE TABLE discussions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    title TEXT NOT NULL,
-    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-
-
-
-/var/www/cyb3ria/migrations/20250810000003_create_comments.sql
-
-CREATE TABLE comments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    discussion_id UUID NOT NULL REFERENCES discussions(id) ON DELETE CASCADE,
-    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    content TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-
-
-
-/var/www/cyb3ria/migrations/20250810000004_add_public_key_to_users.sql
-
--- Add up migration script here
-ALTER TABLE users ADD COLUMN public_key TEXT;
-
--- Add down migration script here
- ALTER TABLE users DROP COLUMN public_key;
-
-
-
-/var/www/cyb3ria/migrations/20250810000005_add_recipient_to_messages.sql
-
--- Add up migration script here
--- Добавляем колонку для ID получателя
-ALTER TABLE messages ADD COLUMN recipient_id UUID;
-
--- Создаем связь с таблицей users, чтобы нельзя было отправить сообщение несуществующему пользователю
-ALTER TABLE messages ADD CONSTRAINT fk_recipient
-    FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL;
-
--- 'Down' миграция для отката
--- Add down migration script here
-ALTER TABLE messages DROP CONSTRAINT fk_recipient;
-ALTER TABLE messages DROP COLUMN recipient_id;
-
-
-
-/var/www/cyb3ria/migrations/20250810000007_create_users_table.sql
+/var/www/cyb3ria/static/index.html
+
+<!-- /var/www/cyb3ria/static/index.html -->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyb3ria Project</title>
+    
+    <!-- Вот самая важная строка для иконки! -->
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+    
+    <!-- Подключаем стили, если нужно -->
+    <link rel="stylesheet" href="/static/statix.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Сайт работает!</h1>
+        <p>Эта страница (index.html) и иконка были успешно отданы Rust-бэкендом через Nginx.</p>
+    </div>
+</body>
+</html>
+
+
+
+/var/www/cyb3ria/static/statix.css
+
+/* Простой тестовый CSS */
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f0f0f0;
+    color: #333;
+}
+
+.container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+
+
+/var/www/cyb3ria/migrations/20250810000001_create_users_table.sql
 
 -- Add migration script here
 
@@ -1021,6 +986,69 @@ CREATE TRIGGER set_timestamp
 BEFORE UPDATE ON users
 FOR EACH ROW
 EXECUTE FUNCTION trigger_set_timestamp();
+
+
+
+/var/www/cyb3ria/migrations/20250810000002_create_messages.sql
+
+CREATE TABLE messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+
+/var/www/cyb3ria/migrations/20250810000003_create_discussions.sql
+
+CREATE TABLE discussions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    title TEXT NOT NULL,
+    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+
+
+/var/www/cyb3ria/migrations/20250810000004_create_comments.sql
+
+CREATE TABLE comments (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    discussion_id UUID NOT NULL REFERENCES discussions(id) ON DELETE CASCADE,
+    author_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+
+
+
+/var/www/cyb3ria/migrations/20250810000005_add_public_key_to_users.sql
+
+-- Add up migration script here
+ALTER TABLE users ADD COLUMN public_key TEXT;
+
+-- Add down migration script here
+ ALTER TABLE users DROP COLUMN public_key;
+
+
+
+/var/www/cyb3ria/migrations/20250810000006_add_recipient_to_messages.sql
+
+-- Add up migration script here
+-- Добавляем колонку для ID получателя
+ALTER TABLE messages ADD COLUMN recipient_id UUID;
+
+-- Создаем связь с таблицей users, чтобы нельзя было отправить сообщение несуществующему пользователю
+ALTER TABLE messages ADD CONSTRAINT fk_recipient
+    FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE SET NULL;
+
+-- 'Down' миграция для отката
+-- Add down migration script here
+ALTER TABLE messages DROP CONSTRAINT fk_recipient;
+ALTER TABLE messages DROP COLUMN recipient_id;
 
 
 

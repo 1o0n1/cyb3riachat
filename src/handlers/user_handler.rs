@@ -1,6 +1,3 @@
-// /var/www/cyb3ria/src/handlers/user_handler.rs
-
-// --- БЛОК 1: Импорты ---
 use axum::{
     extract::{Path, State},
     Json,
@@ -15,21 +12,16 @@ use argon2::{
     },
     Argon2
 };
-// Новые импорты для JWT
 use jsonwebtoken::{encode, EncodingKey, Header};
 use chrono::{Utc, Duration};
-use serde::{Serialize, Deserialize}; // Добавили Deserialize для Claims
+use serde::{Serialize, Deserialize}; 
 use crate::auth::Claims; 
-
 use crate::{
     state::AppState,
     models::user::User,
     error::AppError,
 };
 
-// --- НОВАЯ СТРУКТУРА для ответа ---
-// Мы не хотим отдавать все поля User, особенно хэш пароля.
-// Создадим специальную "безопасную" структуру для ответа.
 #[derive(Serialize, sqlx::FromRow)]
 pub struct SafeUser {
     pub id: Uuid,
@@ -37,7 +29,6 @@ pub struct SafeUser {
     pub public_key: Option<String>,
 }
 
-// --- НОВАЯ ФУНКЦИЯ ---
 pub async fn get_all_users(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<SafeUser>>, AppError> {
@@ -46,51 +37,44 @@ pub async fn get_all_users(
     )
     .fetch_all(&state.pool)
     .await?;
-
     Ok(Json(users))
 }
 
-// --- БЛОК 2: Структура для создания пользователя ---
+// ИЗМЕНЕНИЕ: Добавлено поле для зашифрованного ключа
 #[derive(Deserialize)]
 pub struct CreateUserPayload {
     pub username: String,
     pub email: String,
     pub password: String,
     pub public_key: String,
+    pub encrypted_private_key: String,
 }
 
-// --- БЛОК 3: Функция создания пользователя (остается без изменений) ---
 pub async fn create_user(
     State(state): State<AppState>,
     Json(payload): Json<CreateUserPayload>,
 ) -> Result<Json<User>, AppError> {
-    // ... ваш работающий код для create_user ...
     let password_hash = tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);
         Argon2::default()
             .hash_password(payload.password.as_bytes(), &salt)
             .map(|hash| hash.to_string())
     })
-    .await
-    .map_err(|e| {
-        tracing::error!("JoinError during password hashing: {:?}", e);
-        AppError::PasswordHashError(argon2::password_hash::Error::PhcStringField)
-    })?
-    ?;
+    .await.map_err(|_| AppError::InternalServerError)??;
     
+    // ИЗМЕНЕНИЕ: Добавляем encrypted_private_key в запрос
     let new_user_id = sqlx::query!(
-        "INSERT INTO users (username, email, password_hash, public_key) VALUES ($1, $2, $3, $4) RETURNING id",
-         payload.username,
+        "INSERT INTO users (username, email, password_hash, public_key, encrypted_private_key) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        payload.username,
         payload.email,
         password_hash,
-        payload.public_key
+        payload.public_key,
+        payload.encrypted_private_key
     )
     .fetch_one(&state.pool)
     .await?
     .id;
 
-    // 2. Теперь, когда мы знаем ID, делаем чистый SELECT, чтобы получить полную структуру User.
-    //    Так sqlx точно сможет правильно сопоставить типы.
     let user = sqlx::query_as!(
         User,
         "SELECT * FROM users WHERE id = $1",
@@ -98,12 +82,9 @@ pub async fn create_user(
     )
     .fetch_one(&state.pool)
     .await?;
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
-
     Ok(Json(user))
 }
 
-// --- БЛОК 4: Функция получения пользователя (остается без изменений) ---
 pub async fn get_user(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -115,29 +96,26 @@ pub async fn get_user(
     )
     .fetch_one(&state.pool)
     .await?;
-
     Ok(Json(user))
 }
 
-// --- БЛОК 5: Структура для данных входа (остается без изменений) ---
 #[derive(Deserialize)]
 pub struct LoginPayload {
     pub email: String,
     pub password: String,
 }
 
-// Структура для ответа API после успешного входа
+// ИЗМЕНЕНИЕ: Структура ответа теперь содержит и зашифрованный ключ
 #[derive(Serialize)]
 pub struct AuthResponse {
     token: String,
+    encrypted_private_key: Option<String>,
 }
 
-// --- БЛОК 7: ОБНОВЛЕННАЯ функция login ---
 pub async fn login(
     State(state): State<AppState>,
     Json(payload): Json<LoginPayload>,
-) -> Result<Json<AuthResponse>, AppError> { // Обратите внимание на тип возврата!
-    // 1. Найти пользователя по email
+) -> Result<Json<AuthResponse>, AppError> {
     let user = sqlx::query_as!(
         User,
         "SELECT * FROM users WHERE email = $1",
@@ -147,30 +125,16 @@ pub async fn login(
     .await?
     .ok_or(AppError::InvalidCredentials)?;
 
-    // 2. Проверить и склонировать хэш пароля
-    let password_hash = user.password_hash.clone().ok_or(AppError::InvalidCredentials)?;
-
-    // 3. Сравнить пароль с хэшем
-    let password = payload.password;
+    let password_hash_str = user.password_hash.clone().ok_or(AppError::InvalidCredentials)?;
+    let password = payload.password.clone();
     let verification_result = tokio::task::spawn_blocking(move || {
-        let parsed_hash = match argon2::PasswordHash::new(&password_hash) {
-            Ok(hash) => hash,
-            Err(e) => return Err(e),
-        };
+        let parsed_hash = argon2::PasswordHash::new(&password_hash_str)?;
         Argon2::default().verify_password(password.as_bytes(), &parsed_hash)
-    })
-    .await
-    .map_err(|e| {
-        tracing::error!("JoinError during password verification: {:?}", e);
-        AppError::InternalServerError
-    })?;
+    }).await.map_err(|_| AppError::InternalServerError)?;
 
-    // Если пароль верный, генерируем токен
     if verification_result.is_ok() {
-        // --- Начало блока генерации JWT ---
         let now = Utc::now();
-        // let iat = now.timestamp(); // iat (issued at) обычно не нужен, т.к. есть exp
-        let exp = (now + Duration::days(1)).timestamp(); // Токен живет 1 дней
+        let exp = (now + Duration::days(1)).timestamp();
         
         let claims = Claims {
             sub: user.id,
@@ -179,21 +143,16 @@ pub async fn login(
         };
 
         let token = encode(
-            &Header::default(),
-            &claims,
+            &Header::default(), &claims,
             &EncodingKey::from_secret(state.config.jwt_secret.as_ref()),
-        )
-        .map_err(|e| {
-            tracing::error!("JWT encoding error: {:?}", e);
-            AppError::InternalServerError
-        })?;
-        // --- Конец блока генерации JWT ---
+        ).map_err(|_| AppError::InternalServerError)?;
 
-        // Возвращаем токен
-        Ok(Json(AuthResponse { token }))
+        // ИЗМЕНЕНИЕ: Возвращаем токен и зашифрованный ключ
+        Ok(Json(AuthResponse { 
+            token,
+            encrypted_private_key: user.encrypted_private_key,
+        }))
     } else {
-        // Если пароль неверный
-        tracing::debug!("Invalid password attempt for email: {}", payload.email);
         Err(AppError::InvalidCredentials)
     }
 }

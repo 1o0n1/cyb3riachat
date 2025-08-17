@@ -9,9 +9,10 @@ pub struct User {
     pub email: String,
     pub public_key: Option<String>,
 
-    // Добавляем недостающее поле
-    // Оно Option<String>, так как в БД колонка может быть NULL.
-    // Оно скрыто из JSON-ответов для безопасности.
+    // НОВОЕ ПОЛЕ для зашифрованного ключа
+    #[serde(skip_serializing)] // Не отправляем его в JSON по умолчанию
+    pub encrypted_private_key: Option<String>,
+
     #[serde(skip_serializing)]
     pub password_hash: Option<String>,
 
